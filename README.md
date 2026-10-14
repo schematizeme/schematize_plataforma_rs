@@ -11,7 +11,9 @@ sem domínio (piso 6). Licença MIT.
 | `parasita` | `parasita` — garante `schematize-market` (+`-gui`) em `~/.cargo/bin` | sim |
 | `base` | `procedencia`, `bin`, `arquivo` | sim |
 
-`home` (resolução de `HOME`) compila com qualquer uma das duas. Quem só quer o parasita:
+| `seams` | `seams` — traits `Shell, Rede, Substituicao, Atalhos, PathSetup, Terminal, Abridor, Processos` + `Plataforma::unix()` (linux/freebsd/macos) | não |
+
+`home` (resolução de `HOME`) compila com qualquer uma delas. Quem só quer o parasita:
 `default-features = false, features = ["parasita"]`.
 
 ## Pin (política)
@@ -19,9 +21,9 @@ sem domínio (piso 6). Licença MIT.
 Dependência **git pinada por tag** — nunca `branch` nem `rev` solto:
 
 ```toml
-schematize_plataforma = { git = "https://github.com/schematizeme/schematize_plataforma_rs", tag = "v0.1.0" }
+schematize_plataforma = { git = "https://github.com/schematizeme/schematize_plataforma_rs", tag = "v0.2.0" }
 # só o parasita:
-schematize_plataforma = { git = "https://github.com/schematizeme/schematize_plataforma_rs", tag = "v0.1.0", default-features = false, features = ["parasita"] }
+schematize_plataforma = { git = "https://github.com/schematizeme/schematize_plataforma_rs", tag = "v0.2.0", default-features = false, features = ["parasita"] }
 ```
 
 Subir o pin é um commit explícito em cada app. O CI de cada app deve ter o teste "pin == última tag".

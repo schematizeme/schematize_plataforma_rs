@@ -12,16 +12,19 @@
 //! |---|---|---|
 //! | `parasita` | [`parasita`] | sim |
 //! | `base` | [`procedencia`], [`bin`], [`arquivo`] | sim |
+//! | `seams` | `seams` — traits de plataforma + impl Unix | não |
 //!
-//! O módulo [`home`] (resolução de `HOME`) compila com qualquer uma das duas.
+//! O módulo [`home`] (resolução de `HOME`) compila com qualquer uma delas.
 
 #[cfg(feature = "base")]
 pub mod arquivo;
 #[cfg(feature = "base")]
 pub mod bin;
-#[cfg(any(feature = "parasita", feature = "base"))]
+#[cfg(any(feature = "parasita", feature = "base", feature = "seams"))]
 pub mod home;
 #[cfg(feature = "parasita")]
 pub mod parasita;
 #[cfg(feature = "base")]
 pub mod procedencia;
+#[cfg(feature = "seams")]
+pub mod seams;
