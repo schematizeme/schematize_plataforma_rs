@@ -304,68 +304,97 @@ mod tests {
     /// **O quê:** o script do market, byte a byte. **Onde:** teste.
     #[test]
     fn snapshot_market_comando() {
+        // capturado do original em schematize_market_rs/src/nucleo/bin.rs:131-170
+        // (`abrir_comando_no_terminal`), rodado em .schematize/scratch/snapcap.
         assert_eq!(
             corpo_exec("ssh -p 22 root@10.0.0.1"),
-            "#!/bin/sh\nexec ssh -p 22 root@10.0.0.1\n"
+            r#"#!/bin/sh
+exec ssh -p 22 root@10.0.0.1
+"#
         );
         let s = script_comando(Path::new("/h/.app/run"), 4242, "ssh a@b");
         assert_eq!(
             s.entrega,
             Entrega::Arquivo {
                 caminho: PathBuf::from("/h/.app/run/term-4242.sh"),
-                corpo: "#!/bin/sh\nexec ssh a@b\n".to_string(),
+                corpo: r#"#!/bin/sh
+exec ssh a@b
+"#
+                .to_string(),
                 modo: 0o700
             }
         );
     }
 
+    /// **O quê:** compara o argv de cada emulador de `perfil` com o capturado. **Onde:** testes
+    /// `snapshot_*_argv*`.
+    fn confere(perfil: Emuladores, entrega: &Entrega, capturado: &[(&str, &[&str])]) {
+        for (t, esp) in capturado {
+            assert_eq!(argv(perfil, t, entrega), *esp, "{t}");
+        }
+        let ordem: Vec<&str> = capturado.iter().map(|(t, _)| *t).collect();
+        assert_eq!(nomes(perfil), ordem);
+    }
+
     /// **O quê:** argv por emulador da lista Casa (market/lancador). **Onde:** teste.
     #[test]
     fn snapshot_market_argv_por_emulador() {
+        // capturado do original em schematize_market_rs/src/nucleo/bin.rs:155-163 e
+        // schematize_overdev_rs/src/agentrun/lancador.rs:290-298 (idênticos), script `/r/term-1.sh`.
         let e =
             Entrega::Arquivo { caminho: "/r/term-1.sh".into(), corpo: String::new(), modo: 0o700 };
-        let casos: [(&str, [&str; 3]); 7] = [
-            ("konsole", ["-e", "bash", "/r/term-1.sh"]),
-            ("gnome-terminal", ["--", "bash", "/r/term-1.sh"]),
-            ("xfce4-terminal", ["--", "bash", "/r/term-1.sh"]),
-            ("x-terminal-emulator", ["-e", "bash", "/r/term-1.sh"]),
-            ("alacritty", ["-e", "bash", "/r/term-1.sh"]),
-            ("kitty", ["-e", "bash", "/r/term-1.sh"]),
-            ("xterm", ["-e", "bash", "/r/term-1.sh"]),
+        let capturado: [(&str, &[&str]); 7] = [
+            ("konsole", &["-e", "bash", "/r/term-1.sh"]),
+            ("gnome-terminal", &["--", "bash", "/r/term-1.sh"]),
+            ("xfce4-terminal", &["--", "bash", "/r/term-1.sh"]),
+            ("x-terminal-emulator", &["-e", "bash", "/r/term-1.sh"]),
+            ("alacritty", &["-e", "bash", "/r/term-1.sh"]),
+            ("kitty", &["-e", "bash", "/r/term-1.sh"]),
+            ("xterm", &["-e", "bash", "/r/term-1.sh"]),
         ];
-        for (t, esp) in casos {
-            assert_eq!(argv(Emuladores::Casa, t, &e), esp.to_vec(), "{t}");
-        }
-        assert_eq!(
-            nomes(Emuladores::Casa),
-            [
-                "konsole",
-                "gnome-terminal",
-                "xfce4-terminal",
-                "x-terminal-emulator",
-                "alacritty",
-                "kitty",
-                "xterm"
-            ]
-        );
+        confere(Emuladores::Casa, &e, &capturado);
+        let lanc: [(&str, &[&str]); 7] = [
+            ("konsole", &["-e", "bash", "/r/term-1.sh"]),
+            ("gnome-terminal", &["--", "bash", "/r/term-1.sh"]),
+            ("xfce4-terminal", &["--", "bash", "/r/term-1.sh"]),
+            ("x-terminal-emulator", &["-e", "bash", "/r/term-1.sh"]),
+            ("alacritty", &["-e", "bash", "/r/term-1.sh"]),
+            ("kitty", &["-e", "bash", "/r/term-1.sh"]),
+            ("xterm", &["-e", "bash", "/r/term-1.sh"]),
+        ];
+        assert_eq!(capturado, lanc);
     }
 
-    /// **O quê:** wrapper do lancador: terminal interativo, com e sem claude. **Onde:** teste.
+    /// **O quê:** wrapper do lancador: terminal interativo com claude (capturado do original).
+    /// **Onde:** teste.
     #[test]
     fn snapshot_overdev_lancador_projeto_interativo() {
+        // capturado do original em schematize_overdev_rs/src/agentrun/lancador.rs:335-395
+        // (`abrir_terminal_no_projeto`), claude em /h/.local/bin/claude.
         let com = corpo_projeto_interativo(proj(), Some(Path::new("/h/.local/bin/claude")));
         assert_eq!(
             com,
-            "#!/usr/bin/env bash\nexport PATH=\"$HOME/.local/bin:$HOME/.cargo/bin:$HOME/.claude/local:$PATH\"\ncd \"/home/u/meu projeto\" || exit 1\nif [ -x \"/h/.local/bin/claude\" ]; then\n  \"/h/.local/bin/claude\" --dangerously-skip-permissions\nfi\necho\necho '[schematize] voce esta em /home/u/meu projeto — o shell segue aberto.'\nexec \"${SHELL:-/bin/bash}\" -i\n"
+            r#"#!/usr/bin/env bash
+export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$HOME/.claude/local:$PATH"
+cd "/home/u/meu projeto" || exit 1
+if [ -x "/h/.local/bin/claude" ]; then
+  "/h/.local/bin/claude" --dangerously-skip-permissions
+fi
+echo
+echo '[schematize] voce esta em /home/u/meu projeto — o shell segue aberto.'
+exec "${SHELL:-/bin/bash}" -i
+"#
         );
         let sem = corpo_projeto_interativo(proj(), None);
         assert!(sem.contains("echo '[schematize] o CLI `claude` nao esta no PATH — instale em claude.ai/code.'\necho '[schematize] abrindo so o shell neste projeto.'\necho\n"));
         assert!(!sem.contains("dangerously"));
     }
 
-    /// **O quê:** wrapper do prompt do overdev (lancador). **Onde:** teste.
+    /// **O quê:** wrapper do prompt do overdev (capturado do original). **Onde:** teste.
     #[test]
     fn snapshot_overdev_lancador_prompt() {
+        // capturado do original em schematize_overdev_rs/src/agentrun/lancador.rs:255-395
+        // (`launch_prompt_in_terminal`), modelo `'opus'`, prompt em /p/.schematize/overdev.
         let sh = corpo_claude_prompt(
             proj(),
             Path::new("/h/.local/bin/claude"),
@@ -374,13 +403,22 @@ mod tests {
         );
         assert_eq!(
             sh,
-            "#!/usr/bin/env bash\nexport PATH=\"$HOME/.local/bin:$HOME/.cargo/bin:$HOME/.claude/local:$PATH\"\ncd \"/home/u/meu projeto\" || exit 1\n\"/h/.local/bin/claude\" --dangerously-skip-permissions --model 'opus' \"$(cat \"/p/.schematize/overdev/prompt-1-0.txt\")\"\necho\nread -rp '[overdev encerrado — Enter para fechar] '\n"
+            r#"#!/usr/bin/env bash
+export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$HOME/.claude/local:$PATH"
+cd "/home/u/meu projeto" || exit 1
+"/h/.local/bin/claude" --dangerously-skip-permissions --model 'opus' "$(cat "/p/.schematize/overdev/prompt-1-0.txt")"
+echo
+read -rp '[overdev encerrado — Enter para fechar] '
+"#
         );
     }
 
-    /// **O quê:** wrapper do agente `rerun` e a lista própria dele. **Onde:** teste.
+    /// **O quê:** wrapper do agente `rerun` e a lista própria dele (capturados do original).
+    /// **Onde:** teste.
     #[test]
     fn snapshot_overdev_agente_wrapper_e_argv() {
+        // capturado do original em schematize_overdev_rs/src/nucleo/agente.rs:27-110
+        // (`abrir` + `spawn`), script `/p/run-1-0.sh`.
         let sh = corpo_agente(
             proj(),
             Path::new("/h/.local/bin/claude"),
@@ -388,46 +426,44 @@ mod tests {
         );
         assert_eq!(
             sh,
-            "#!/usr/bin/env bash\nexport PATH=\"$HOME/.local/bin:$HOME/.cargo/bin:$HOME/.claude/local:$PATH\"\ncd \"/home/u/meu projeto\" || exit 1\n\"/h/.local/bin/claude\" --dangerously-skip-permissions \"$(cat \"/p/skills/prompt-1-0.txt\")\"\necho\nread -rp '[agente encerrado — Enter para fechar] '\n"
-        );
-        assert_eq!(
-            nomes(Emuladores::Agente),
-            [
-                "konsole",
-                "gnome-terminal",
-                "xfce4-terminal",
-                "alacritty",
-                "kitty",
-                "wezterm",
-                "xterm"
-            ]
+            r#"#!/usr/bin/env bash
+export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$HOME/.claude/local:$PATH"
+cd "/home/u/meu projeto" || exit 1
+"/h/.local/bin/claude" --dangerously-skip-permissions "$(cat "/p/skills/prompt-1-0.txt")"
+echo
+read -rp '[agente encerrado — Enter para fechar] '
+"#
         );
         let e = Entrega::Arquivo { caminho: "/p/run-1-0.sh".into(), corpo: sh, modo: 0o755 };
-        assert_eq!(argv(Emuladores::Agente, "wezterm", &e), ["-e", "bash", "/p/run-1-0.sh"]);
-        assert_eq!(argv(Emuladores::Agente, "gnome-terminal", &e), ["--", "bash", "/p/run-1-0.sh"]);
-        assert_eq!(argv(Emuladores::Agente, "konsole", &e), ["-e", "bash", "/p/run-1-0.sh"]);
+        let capturado: [(&str, &[&str]); 7] = [
+            ("konsole", &["-e", "bash", "/p/run-1-0.sh"]),
+            ("gnome-terminal", &["--", "bash", "/p/run-1-0.sh"]),
+            ("xfce4-terminal", &["--", "bash", "/p/run-1-0.sh"]),
+            ("alacritty", &["-e", "bash", "/p/run-1-0.sh"]),
+            ("kitty", &["-e", "bash", "/p/run-1-0.sh"]),
+            ("wezterm", &["-e", "bash", "/p/run-1-0.sh"]),
+            ("xterm", &["-e", "bash", "/p/run-1-0.sh"]),
+        ];
+        confere(Emuladores::Agente, &e, &capturado);
     }
 
     /// **O quê:** argv da GUI por emulador (`bash -c <cmd>`, kitty sem flag). **Onde:** teste.
     #[test]
     fn snapshot_overdev_gui_argv_por_emulador() {
+        // capturado do original em schematize_overdev_rs/src/gui/terminal.rs:30-110 (`abrir`),
+        // comando `cd 'a b' && ls`.
         let s = script_gui("cd 'a b' && ls");
-        let casos: [(&str, &[&str]); 8] = [
-            ("x-terminal-emulator", &["-e"]),
-            ("konsole", &["-e"]),
-            ("gnome-terminal", &["--"]),
-            ("xfce4-terminal", &["-x"]),
-            ("tilix", &["-e"]),
-            ("kitty", &[]),
-            ("alacritty", &["-e"]),
-            ("xterm", &["-e"]),
+        let capturado: [(&str, &[&str]); 8] = [
+            ("x-terminal-emulator", &["-e", "bash", "-c", "cd 'a b' && ls"]),
+            ("konsole", &["-e", "bash", "-c", "cd 'a b' && ls"]),
+            ("gnome-terminal", &["--", "bash", "-c", "cd 'a b' && ls"]),
+            ("xfce4-terminal", &["-x", "bash", "-c", "cd 'a b' && ls"]),
+            ("tilix", &["-e", "bash", "-c", "cd 'a b' && ls"]),
+            ("kitty", &["bash", "-c", "cd 'a b' && ls"]),
+            ("alacritty", &["-e", "bash", "-c", "cd 'a b' && ls"]),
+            ("xterm", &["-e", "bash", "-c", "cd 'a b' && ls"]),
         ];
-        for (t, pre) in casos {
-            let mut esp: Vec<String> = pre.iter().map(|x| x.to_string()).collect();
-            esp.extend(["bash", "-c", "cd 'a b' && ls"].map(String::from));
-            assert_eq!(argv(Emuladores::Gui, t, &s.entrega), esp, "{t}");
-        }
-        assert_eq!(nomes(Emuladores::Gui)[0], "x-terminal-emulator");
+        confere(Emuladores::Gui, &s.entrega, &capturado);
     }
 
     /// **O quê:** a escolha respeita a ordem de cada perfil. **Onde:** teste.

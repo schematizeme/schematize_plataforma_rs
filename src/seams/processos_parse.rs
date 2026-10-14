@@ -25,6 +25,14 @@ pub(super) fn args_de_cmdline(raw: &[u8]) -> Vec<String> {
         .collect()
 }
 
+/// **O quê:** cmdline cru vira uma linha única (NUL -> espaço, UTF-8 inválido com perda),
+/// exatamente como `supervisor_vivo_em` fazia (`from_utf8_lossy(..).replace('\0', " ")`).
+///
+/// **Onde:** `pids_por_argv` no ramo Linux.
+pub(super) fn linha_de_cmdline(raw: &[u8]) -> String {
+    String::from_utf8_lossy(raw).replace('\0', " ")
+}
+
 /// **O quê:** decide se um cmdline é o processo `nome`: argv0 com basename `nome`, OU runtime
 /// (`node`/`nodejs`/`bun`/`deno`) cujo script seguinte é `nome` (`.../nome`, `nome/cli.js`,
 /// `nome-code`, `/nome/cli`). Movido de `agents::cmdline_e_claude`, generalizado de `claude`.

@@ -11,22 +11,44 @@
 //!
 //! **Comportamento (herdado):** `garantir_no_path` EDITA os `rc` (`.bashrc`, `.profile`,
 //! `.zshrc`), sempre em modo `append` e idempotente (não repete a linha). `orientacao` só
-//! ACONSELHA: nunca escreve nada. O texto de `orientacao` é o do locale `en` do market (a lib
-//! é std-only e não traz i18n); o app que quiser traduzir usa as peças puras.
+//! ACONSELHA: nunca escreve nada, e devolve DADOS ([`Orientacao`]), não prosa — o texto
+//! (i18n) é do app hospedeiro.
 //!
 //! **Por que existe (anti-padrão 48):** num CachyOS recém-instalado (rustup do pacman, shell
 //! fish) a pasta nunca entrou no PATH e "reabra o terminal" não resolvia nada.
 //!
 //! Windows: [`PathSetupUnix`] não existe lá; as funções puras compilam em qualquer alvo.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
-/// Texto da dica (locale `en` do market, chave `path.hint`).
-const DICA: &str = "The folder {dir} is not in your PATH yet — that is why the command may not be found, and reopening the terminal alone will not fix it.\nTo fix it, run this line once{saved}:\n    {command}";
-/// Complemento "salvo em" (locale `en`, chave `path.saved_in`).
-const SALVO_EM: &str = "(saved in {file})";
 /// Os `rc` que recebem o export, na ordem original.
 const RCS: [&str; 3] = [".bashrc", ".profile", ".zshrc"];
+
+/// **O quê:** o shell do usuário, reduzido ao que muda o comando de PATH.
+/// **Onde:** [`Orientacao::shell`], derivado de `$SHELL`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TipoShell {
+    /// bash.
+    Bash,
+    /// zsh.
+    Zsh,
+    /// fish.
+    Fish,
+    /// Qualquer outro (ou `SHELL` vazio/desconhecido).
+    Outro,
+}
+
+/// **O quê:** a orientação estruturada de como pôr uma pasta no PATH (sem texto traduzível).
+/// **Onde:** devolvida por [`PathSetup::orientacao`]; o host monta a mensagem no seu idioma.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Orientacao {
+    /// Shell detectado.
+    pub shell: TipoShell,
+    /// `rc` a editar (absoluto sob o home); `None` para [`TipoShell::Outro`].
+    pub arquivo_rc: Option<PathBuf>,
+    /// A linha de comando exata a rodar (`fish_add_path ...` ou `echo 'export ...' >> rc`).
+    pub linha: String,
+}
 
 /// **O quê:** a costura de "pôr uma pasta no PATH do usuário".
 ///
@@ -36,9 +58,11 @@ pub trait PathSetup: Send + Sync {
     /// **Onde:** fim de `install`/`update`. Erro é `String` acionável.
     fn garantir_no_path(&self, dir: &Path) -> Result<(), String>;
 
-    /// **O quê:** a orientação (texto) de como pôr `dir` no PATH; `""` se já está no PATH.
-    /// Nunca edita nada. **Onde:** fim de `install`/`update`, que imprimem o resultado.
-    fn orientacao(&self, dir: &Path) -> String;
+    /// **O quê:** como pôr `dir` no PATH; `None` se já está no PATH (ou se não há orientação
+    /// segura: HOME ausente ou `dir` com caracter de controle/não-UTF-8 — `garantir_no_path`
+    /// reporta esses casos como erro). Nunca edita nada.
+    /// **Onde:** fim de `install`/`update`; o host formata a mensagem (i18n).
+    fn orientacao(&self, dir: &Path) -> Option<Orientacao>;
 }
 
 /// **O quê:** implementação Unix: edita os `rc` de shell e lê `PATH`/`SHELL` do ambiente.
@@ -59,14 +83,12 @@ impl PathSetup for PathSetupUnix {
         garantir_no_path_em(dir, &home)
     }
 
-    /// **O quê:** lê PATH, HOME e SHELL do ambiente e delega a [`orientacao_em`].
-    /// **Onde:** fim de `install`/`update`.
-    fn orientacao(&self, dir: &Path) -> String {
+    /// **O quê:** lê PATH, HOME e SHELL do ambiente e delega a [`orientacao_em`]; sem HOME,
+    /// `None`. **Onde:** fim de `install`/`update`.
+    fn orientacao(&self, dir: &Path) -> Option<Orientacao> {
         let path = std::env::var("PATH").unwrap_or_default();
         let shell = std::env::var("SHELL").unwrap_or_default();
-        let Some(home) = crate::home::home_do_ambiente() else {
-            return "HOME não definido; defina HOME e rode de novo.".to_string();
-        };
+        let home = crate::home::home_do_ambiente()?;
         orientacao_em(&path, dir, &home, &shell)
     }
 }
@@ -212,28 +234,26 @@ pub fn garantir_no_path_em(dir: &Path, home: &Path) -> Result<(), String> {
     Err(format!("{}. Acrescente manualmente:{linha}", erros.join("; ")))
 }
 
-/// **O quê:** núcleo puro da orientação: `""` se `dir` já está em `path`; senão a dica com a
-/// ÚNICA linha que resolve no shell `shell` (o valor de `$SHELL`). Nunca edita nada.
-/// **Onde:** [`PathSetupUnix`] e os testes.
-pub fn orientacao_em(path: &str, dir: &Path, home: &Path, shell: &str) -> String {
+/// **O quê:** núcleo puro da orientação: `None` se `dir` já está em `path` (ou não há linha
+/// segura, ver [`PathSetup::orientacao`]); senão o [`Orientacao`] do shell `shell` (valor de
+/// `$SHELL`). Nunca edita nada. **Onde:** [`PathSetupUnix`] e os testes.
+pub fn orientacao_em(path: &str, dir: &Path, home: &Path, shell: &str) -> Option<Orientacao> {
     if esta_no_path(path, dir, home) {
-        return String::new();
+        return None;
     }
-    let alvo = match alvo_de(dir, home) {
-        Ok(a) => a,
-        Err(e) => return e,
-    };
+    let alvo = alvo_de(dir, home).ok()?;
     let nome = shell.rsplit('/').next().unwrap_or("");
-    let (arquivo, comando) = match nome {
-        "fish" => (None, format!("fish_add_path {}", alvo.fish)),
-        "bash" => (Some("~/.bashrc"), linha_export(&alvo, "~/.bashrc")),
-        "zsh" => (Some("~/.zshrc"), linha_export(&alvo, "~/.zshrc")),
-        _ => (Some("~/.profile"), linha_export(&alvo, "~/.profile")),
+    let (tipo, rc, linha) = match nome {
+        "fish" => (
+            TipoShell::Fish,
+            Some(home.join(".config/fish/config.fish")),
+            format!("fish_add_path {}", alvo.fish),
+        ),
+        "bash" => (TipoShell::Bash, Some(home.join(".bashrc")), linha_export(&alvo, "~/.bashrc")),
+        "zsh" => (TipoShell::Zsh, Some(home.join(".zshrc")), linha_export(&alvo, "~/.zshrc")),
+        _ => (TipoShell::Outro, None, linha_export(&alvo, "~/.profile")),
     };
-    let salvo = arquivo.map(|a| format!(" {}", SALVO_EM.replace("{file}", a))).unwrap_or_default();
-    DICA.replace("{dir}", &dir.display().to_string())
-        .replace("{saved}", &salvo)
-        .replace("{command}", &comando)
+    Some(Orientacao { shell: tipo, arquivo_rc: rc, linha })
 }
 
 #[cfg(test)]
@@ -272,34 +292,63 @@ mod tests {
         std::fs::read_to_string(p).unwrap_or_default()
     }
 
-    /// **O quê:** snapshot byte a byte da dica do bash. **Onde:** garante texto idêntico ao market.
-    #[test]
-    fn snapshot_bash() {
-        let m = orientacao_em(SEM, &dir(), &home(), "/bin/bash");
-        assert_eq!(m, "The folder /home/ana/.cargo/bin is not in your PATH yet — that is why the command may not be found, and reopening the terminal alone will not fix it.\nTo fix it, run this line once (saved in ~/.bashrc):\n    echo 'export PATH=\"$HOME/.cargo/bin:$PATH\"' >> ~/.bashrc");
+    /// **O quê:** atalho: orientação com PATH sem a pasta. **Onde:** testes.
+    fn ori(d: &Path, shell: &str) -> Option<Orientacao> {
+        orientacao_em(SEM, d, &home(), shell)
     }
 
-    /// **O quê:** snapshot da dica do zsh. **Onde:** texto idêntico ao market.
+    /// **O quê:** bash: campos e `linha` byte-idêntica. **Onde:** snapshot da struct.
     #[test]
-    fn snapshot_zsh() {
-        let m = orientacao_em(SEM, &dir(), &home(), "/usr/bin/zsh");
-        assert!(m.ends_with("run this line once (saved in ~/.zshrc):\n    echo 'export PATH=\"$HOME/.cargo/bin:$PATH\"' >> ~/.zshrc"), "{m}");
+    fn orientacao_bash() {
+        let o = ori(&dir(), "/bin/bash").expect("orienta");
+        assert_eq!(o.shell, TipoShell::Bash);
+        assert_eq!(o.arquivo_rc, Some(PathBuf::from("/home/ana/.bashrc")));
+        assert_eq!(o.linha, "echo 'export PATH=\"$HOME/.cargo/bin:$PATH\"' >> ~/.bashrc");
     }
 
-    /// **O quê:** snapshot da dica do fish (sem "saved in"). **Onde:** texto idêntico ao market.
+    /// **O quê:** zsh com SHELL em caminho. **Onde:** snapshot da struct.
     #[test]
-    fn snapshot_fish() {
-        let m = orientacao_em(SEM, &dir(), &home(), "/usr/bin/fish");
-        assert_eq!(m, "The folder /home/ana/.cargo/bin is not in your PATH yet — that is why the command may not be found, and reopening the terminal alone will not fix it.\nTo fix it, run this line once:\n    fish_add_path ~/.cargo/bin");
-        assert!(!m.contains("reabra"));
+    fn orientacao_zsh() {
+        let o = ori(&dir(), "/usr/bin/zsh").expect("orienta");
+        assert_eq!(o.shell, TipoShell::Zsh);
+        assert_eq!(o.arquivo_rc, Some(PathBuf::from("/home/ana/.zshrc")));
+        assert_eq!(o.linha, "echo 'export PATH=\"$HOME/.cargo/bin:$PATH\"' >> ~/.zshrc");
     }
 
-    /// **O quê:** snapshot do shell desconhecido/vazio (cai no `.profile`). **Onde:** idem.
+    /// **O quê:** fish com SHELL em caminho. **Onde:** snapshot da struct.
     #[test]
-    fn snapshot_outro_e_vazio() {
-        for s in ["", "/usr/bin/nu", "bash\n", "/"] {
-            let m = orientacao_em(SEM, &dir(), &home(), s);
-            assert!(m.ends_with("once (saved in ~/.profile):\n    echo 'export PATH=\"$HOME/.cargo/bin:$PATH\"' >> ~/.profile"), "{s:?}: {m}");
+    fn orientacao_fish() {
+        let o = ori(&dir(), "/usr/bin/fish").expect("orienta");
+        assert_eq!(o.shell, TipoShell::Fish);
+        assert_eq!(o.arquivo_rc, Some(PathBuf::from("/home/ana/.config/fish/config.fish")));
+        assert_eq!(o.linha, "fish_add_path ~/.cargo/bin");
+    }
+
+    /// **O quê:** shell desconhecido/vazio/hostil cai em `Outro` (linha do `.profile`, sem rc).
+    /// **Onde:** borda de `$SHELL`.
+    #[test]
+    fn orientacao_outro_e_vazio() {
+        for s in ["", "/usr/bin/nu", "bash\n", "/", "fish ", "FISH", "/bin/zsh/", "\0", "ção"] {
+            let o = ori(&dir(), s).expect("orienta");
+            assert_eq!(o.shell, TipoShell::Outro, "{s:?}");
+            assert_eq!(o.arquivo_rc, None, "{s:?}");
+            assert_eq!(
+                o.linha, "echo 'export PATH=\"$HOME/.cargo/bin:$PATH\"' >> ~/.profile",
+                "{s:?}"
+            );
+        }
+    }
+
+    /// **O quê:** SHELL com caminhos variados mapeia ao tipo certo. **Onde:** borda de `$SHELL`.
+    #[test]
+    fn shell_com_caminho() {
+        for (s, t) in [
+            ("/usr/bin/fish", TipoShell::Fish),
+            ("/bin/zsh", TipoShell::Zsh),
+            ("/usr/local/bin/bash", TipoShell::Bash),
+            ("fish", TipoShell::Fish),
+        ] {
+            assert_eq!(ori(&dir(), s).expect("orienta").shell, t, "{s}");
         }
     }
 
@@ -323,7 +372,7 @@ mod tests {
             "/usr/bin:$HOME/.cargo/bin/",
             "/usr/bin:${HOME}/.cargo/bin",
         ] {
-            assert_eq!(orientacao_em(p, &dir(), &home(), "/usr/bin/fish"), "", "{p}");
+            assert_eq!(orientacao_em(p, &dir(), &home(), "/usr/bin/fish"), None, "{p}");
         }
     }
 
@@ -331,7 +380,7 @@ mod tests {
     #[test]
     fn dir_parecido_nao_conta() {
         for p in ["/home/ana/.cargo/bin-velho:/home/ana/.cargo", "", "::", "  "] {
-            assert!(!orientacao_em(p, &dir(), &home(), "/bin/bash").is_empty(), "{p:?}");
+            assert!(orientacao_em(p, &dir(), &home(), "/bin/bash").is_some(), "{p:?}");
         }
     }
 
@@ -339,7 +388,7 @@ mod tests {
     #[test]
     fn dir_com_barra_final() {
         let d = PathBuf::from("/home/ana/.cargo/bin/");
-        assert_eq!(orientacao_em("/home/ana/.cargo/bin", &d, &home(), "/bin/bash"), "");
+        assert_eq!(orientacao_em("/home/ana/.cargo/bin", &d, &home(), "/bin/bash"), None);
     }
 
     /// **O quê:** dirs hostis (espaço, aspas, `$`, unicode) geram comando bem citado.
@@ -347,23 +396,34 @@ mod tests {
     #[test]
     fn dir_hostil_e_citado() {
         let d = PathBuf::from("/home/ana/meu app/it's \"x\" $y ção/bin");
-        let m = orientacao_em(SEM, &d, &home(), "/bin/bash");
+        let m = ori(&d, "/bin/bash").expect("orienta");
         assert!(
-            m.contains(r#"export PATH="$HOME/meu app/it'\''s \"x\" \$y ção/bin:$PATH""#),
-            "{m}"
+            m.linha.contains(r#"export PATH="$HOME/meu app/it'\''s \"x\" \$y ção/bin:$PATH""#),
+            "{}",
+            m.linha
         );
-        let f = orientacao_em(SEM, &d, &home(), "/usr/bin/fish");
-        assert!(f.contains(r"fish_add_path '/home/ana/meu app/it\'s"), "{f}");
+        let f = ori(&d, "/usr/bin/fish").expect("orienta");
+        assert!(f.linha.starts_with(r"fish_add_path '/home/ana/meu app/it\'s"), "{}", f.linha);
     }
 
-    /// **O quê:** newline/NUL no caminho vira erro explicativo, nunca comando quebrado.
-    /// **Onde:** `alvo_de`.
+    /// **O quê:** dir só com espaços/unicode (seguro ou não) e fora do home. **Onde:** `alvo_de`.
+    #[test]
+    fn dir_unicode_e_fora_do_home() {
+        let u = ori(Path::new("/home/ana/ção"), "/usr/bin/fish").expect("orienta");
+        assert_eq!(u.linha, "fish_add_path ~/ção");
+        let e = ori(Path::new("/opt/meu app/bin"), "/usr/bin/fish").expect("orienta");
+        assert_eq!(e.linha, "fish_add_path '/opt/meu app/bin'");
+        let b = ori(Path::new("/opt/meu app/bin"), "/bin/zsh").expect("orienta");
+        assert_eq!(b.linha, "echo 'export PATH=\"/opt/meu app/bin:$PATH\"' >> ~/.zshrc");
+    }
+
+    /// **O quê:** newline/NUL no caminho: sem orientação (nunca comando quebrado) e
+    /// `garantir_no_path_em` devolve erro. **Onde:** `alvo_de`.
     #[test]
     fn dir_com_newline_e_recusado() {
         for s in ["/home/ana/a\nb", "/home/ana/a\0b"] {
             let d = PathBuf::from(s);
-            let m = orientacao_em(SEM, &d, &home(), "/bin/bash");
-            assert!(m.contains("controle") && !m.contains("echo"), "{m}");
+            assert_eq!(ori(&d, "/bin/bash"), None, "{s:?}");
             let e = garantir_no_path_em(&d, &tmp_home("nl")).expect_err("deve recusar");
             assert!(e.contains("controle"), "{e}");
         }
@@ -372,8 +432,7 @@ mod tests {
     /// **O quê:** dir vazio é aceito sem pânico (cai como absoluto vazio). **Onde:** borda.
     #[test]
     fn dir_vazio_nao_entra_em_panico() {
-        let m = orientacao_em(SEM, Path::new(""), &home(), "/bin/bash");
-        assert!(m.starts_with("The folder  is not"), "{m}");
+        assert!(ori(Path::new(""), "/bin/bash").is_some());
     }
 
     /// **O quê:** idempotência: duas chamadas = uma linha por rc; cria os 3 rc. **Onde:** disco.

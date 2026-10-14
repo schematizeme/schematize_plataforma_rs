@@ -21,14 +21,36 @@ mod parse;
 mod testes;
 
 use parse::{
-    args_de_cmdline, cmdline_casa, parse_carga, parse_freebsd_mb, parse_lsof_cwd, parse_meminfo_mb,
-    parse_procstat_cwd, parse_ps, parse_tasklist, parse_vm_stat_mb, pid_em_ps,
+    args_de_cmdline, cmdline_casa, linha_de_cmdline, parse_carga, parse_freebsd_mb, parse_lsof_cwd,
+    parse_meminfo_mb, parse_procstat_cwd, parse_ps, parse_tasklist, parse_vm_stat_mb, pid_em_ps,
 };
 
 /// Maior pid aceito (limite do `pid_t` com sinal); acima disso `kill`/`ps` não conhecem.
 const PID_MAX: u32 = i32::MAX as u32;
 /// Quantos pids vão por invocação de `lsof`/`procstat` (limita o tamanho da linha de comando).
 const LOTE_PIDS: usize = 256;
+
+/// Como [`Processos::em_dir`] compara o cwd do processo com o diretório pedido.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Modo {
+    /// cwd == dir (comparação por componentes de caminho; barra final é irrelevante).
+    Exato,
+    /// cwd == dir OU cwd dentro de dir (`starts_with` por componentes: `/a/proj2` NÃO está em
+    /// `/a/proj`).
+    Prefixo,
+}
+
+impl Modo {
+    /// **O quê:** `cwd` satisfaz o modo em relação a `dir`?
+    ///
+    /// **Onde:** `em_dir` de [`ProcessosCom`] (todos os SOs).
+    pub fn casa(self, cwd: &Path, dir: &Path) -> bool {
+        match self {
+            Modo::Exato => cwd == dir,
+            Modo::Prefixo => cwd.starts_with(dir),
+        }
+    }
+}
 
 /// Contrato de consulta a processos e recursos. `None` = desconhecido (nunca um número falso).
 pub trait Processos: Send + Sync {
@@ -40,10 +62,23 @@ pub trait Processos: Send + Sync {
     ///
     /// **Onde:** orçamento de agentes (`agents::count_claude_processes`).
     fn contar(&self, nome: &str) -> usize;
-    /// **O quê:** algum processo `nome` tem cwd exatamente em `dir`?
+    /// **O quê:** algum processo `nome` tem cwd em `dir` segundo `modo` ([`Modo::Exato`] ou
+    /// [`Modo::Prefixo`])? NÃO exclui o processo chamador (use [`Processos::pids_por_argv`]
+    /// quando precisar excluir a si mesmo).
     ///
-    /// **Onde:** supervisor do overdev (`agente_vivo_em`, `supervisor_vivo_em`).
-    fn em_dir(&self, nome: &str, dir: &Path) -> bool;
+    /// **Onde:** supervisor do overdev (`agente_vivo_em` = Prefixo).
+    fn em_dir(&self, nome: &str, dir: &Path, modo: Modo) -> bool;
+    /// **O quê:** pids (exceto `std::process::id()`) cuja linha de comando completa (argv unido
+    /// por espaço) contém CADA `trecho` como substring. `trechos` vazio ou com trecho vazio
+    /// devolve vazio (fail-closed). Windows: sempre vazio (sem argv confiável).
+    ///
+    /// **Onde:** supervisor do overdev (`supervisor_vivo_em`: `overdev` + `supervise`).
+    fn pids_por_argv(&self, trechos: &[&str]) -> Vec<u32>;
+    /// **O quê:** como [`Processos::pids_por_argv`], mas só os pids cujo cwd == `dir`
+    /// ([`Modo::Exato`]); cwd ilegível = não casa. Windows: sempre vazio.
+    ///
+    /// **Onde:** supervisor do overdev (`supervisor_vivo_em`: argv E cwd do projeto).
+    fn pids_por_argv_em(&self, trechos: &[&str], dir: &Path) -> Vec<u32>;
     /// **O quê:** RAM disponível em MB, ou `None` se não der para saber.
     ///
     /// **Onde:** orçamento de agentes (`agents::mem_available_mb`).
@@ -224,11 +259,11 @@ impl ProcessosCom {
         lista.into_iter().filter(|(_, a)| cmdline_casa(a, nome)).map(|(p, _)| p).collect()
     }
 
-    /// **O quê:** algum dos `pids` tem cwd == `dir`, perguntando a `procstat` (FreeBSD) ou
+    /// **O quê:** algum dos `pids` tem cwd casando `dir` por `modo`, perguntando a `procstat` (FreeBSD) ou
     /// `lsof` (macOS/outros) em lotes.
     ///
     /// **Onde:** `em_dir` fora do Linux.
-    fn cwd_por_comando(&self, pids: &[u32], dir: &Path) -> bool {
+    fn cwd_por_comando(&self, pids: &[u32], dir: &Path, modo: Modo) -> bool {
         pids.chunks(LOTE_PIDS).any(|lote| {
             let ids: Vec<String> = lote.iter().map(u32::to_string).collect();
             let cwds = if self.sistema == Sistema::FreeBsd {
@@ -240,7 +275,7 @@ impl ProcessosCom {
                 let a = ["-a", "-d", "cwd", "-Fn", "-p", lista.as_str()];
                 self.cmd.rodar("lsof", &a).map(|t| parse_lsof_cwd(&t))
             };
-            cwds.unwrap_or_default().iter().any(|c| c.as_path() == dir)
+            cwds.unwrap_or_default().iter().any(|c| modo.casa(c, dir))
         })
     }
 }
@@ -285,18 +320,69 @@ impl Processos for ProcessosCom {
         self.pids_de(nome).len()
     }
 
-    /// **O quê:** algum processo `nome` com cwd == `dir`.
+    /// **O quê:** algum processo `nome` com cwd casando `dir` por `modo`.
     ///
     /// **Onde:** trait [`Processos`].
-    fn em_dir(&self, nome: &str, dir: &Path) -> bool {
+    fn em_dir(&self, nome: &str, dir: &Path, modo: Modo) -> bool {
         if self.sistema == Sistema::Windows {
             return false;
         }
         let pids = self.pids_de(nome);
         if self.sistema == Sistema::Linux {
-            return pids.iter().any(|p| self.proc.cwd(*p).is_some_and(|c| c == dir));
+            return pids.iter().any(|p| self.proc.cwd(*p).is_some_and(|c| modo.casa(&c, dir)));
         }
-        self.cwd_por_comando(&pids, dir)
+        self.cwd_por_comando(&pids, dir, modo)
+    }
+
+    /// **O quê:** pids (sem o próprio) cujo argv unido por espaço contém todos os `trechos`.
+    ///
+    /// **Onde:** trait [`Processos`].
+    fn pids_por_argv(&self, trechos: &[&str]) -> Vec<u32> {
+        if trechos.is_empty() || trechos.iter().any(|t| t.is_empty()) {
+            return Vec::new();
+        }
+        let eu = std::process::id();
+        let casa = |linha: &str| trechos.iter().all(|t| linha.contains(t));
+        let achados: Vec<u32> = match self.sistema {
+            Sistema::Windows => Vec::new(),
+            Sistema::Linux => self
+                .proc
+                .pids()
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|p| {
+                    let raw = self.proc.cmdline(*p).unwrap_or_default();
+                    casa(&linha_de_cmdline(&raw))
+                })
+                .collect(),
+            _ => self
+                .lista_ps()
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|(_, a)| casa(&a.join(" ")))
+                .map(|(p, _)| p)
+                .collect(),
+        };
+        achados.into_iter().filter(|p| *p != eu).collect()
+    }
+
+    /// **O quê:** `pids_por_argv` filtrado por cwd == `dir` (`/proc/<pid>/cwd` no Linux; um
+    /// `procstat`/`lsof` por pid candidato nos demais).
+    ///
+    /// **Onde:** trait [`Processos`].
+    fn pids_por_argv_em(&self, trechos: &[&str], dir: &Path) -> Vec<u32> {
+        let candidatos = self.pids_por_argv(trechos);
+        match self.sistema {
+            Sistema::Windows => Vec::new(),
+            Sistema::Linux => candidatos
+                .into_iter()
+                .filter(|p| self.proc.cwd(*p).is_some_and(|c| Modo::Exato.casa(&c, dir)))
+                .collect(),
+            _ => candidatos
+                .into_iter()
+                .filter(|p| self.cwd_por_comando(&[*p], dir, Modo::Exato))
+                .collect(),
+        }
     }
 
     /// **O quê:** RAM disponível por `/proc/meminfo`, `sysctl` (FreeBSD) ou `vm_stat` (macOS).
@@ -351,8 +437,20 @@ impl Processos for ProcessosUnix {
     /// **O quê:** delega ao motor real.
     ///
     /// **Onde:** trait [`Processos`].
-    fn em_dir(&self, nome: &str, dir: &Path) -> bool {
-        ProcessosCom::real().em_dir(nome, dir)
+    fn em_dir(&self, nome: &str, dir: &Path, modo: Modo) -> bool {
+        ProcessosCom::real().em_dir(nome, dir, modo)
+    }
+    /// **O quê:** delega ao motor real.
+    ///
+    /// **Onde:** trait [`Processos`].
+    fn pids_por_argv(&self, trechos: &[&str]) -> Vec<u32> {
+        ProcessosCom::real().pids_por_argv(trechos)
+    }
+    /// **O quê:** delega ao motor real.
+    ///
+    /// **Onde:** trait [`Processos`].
+    fn pids_por_argv_em(&self, trechos: &[&str], dir: &Path) -> Vec<u32> {
+        ProcessosCom::real().pids_por_argv_em(trechos, dir)
     }
     /// **O quê:** delega ao motor real.
     ///

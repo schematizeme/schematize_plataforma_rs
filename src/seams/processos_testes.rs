@@ -257,12 +257,12 @@ fn linux_motor() {
     let (m, cmd) = motor(Sistema::Linux, proc, &[]);
     assert_eq!(m.contar("claude"), 3);
     assert_eq!(m.contar(""), 0);
-    assert!(m.em_dir("claude", Path::new("/p/a")));
-    assert!(m.em_dir("claude", Path::new("/p/a/")), "barra final é o mesmo caminho");
-    assert!(m.em_dir("claude", Path::new("/p/a/sub")));
-    assert!(m.em_dir("claude", Path::new("/p/b")));
-    assert!(!m.em_dir("claude", Path::new("/p")), "ancestral não é cwd igual");
-    assert!(!m.em_dir("vim-nao", Path::new("/p/a")));
+    assert!(m.em_dir("claude", Path::new("/p/a"), Modo::Exato));
+    assert!(m.em_dir("claude", Path::new("/p/a/"), Modo::Exato), "barra final é o mesmo caminho");
+    assert!(m.em_dir("claude", Path::new("/p/a/sub"), Modo::Exato));
+    assert!(m.em_dir("claude", Path::new("/p/b"), Modo::Exato));
+    assert!(!m.em_dir("claude", Path::new("/p"), Modo::Exato), "ancestral não é cwd igual");
+    assert!(!m.em_dir("vim-nao", Path::new("/p/a"), Modo::Exato));
     assert!(m.vivo(10) && m.vivo(13) && !m.vivo(99));
     assert!(!m.vivo(0) && !m.vivo(u32::MAX) && !m.vivo(i32::MAX as u32 + 1));
     assert!(cmd.chamadas.lock().map(|c| c.is_empty()).unwrap_or(false), "Linux não roda comando");
@@ -275,7 +275,7 @@ fn linux_motor() {
 fn linux_sem_proc() {
     let (m, _) = motor(Sistema::Linux, ProcFalso::default(), &[]);
     assert_eq!(m.contar("claude"), 0);
-    assert!(!m.em_dir("claude", Path::new("/")));
+    assert!(!m.em_dir("claude", Path::new("/"), Modo::Exato));
     assert_eq!(m.memoria_disponivel_mb(), None);
     assert_eq!(m.carga1(), None);
 }
@@ -313,9 +313,9 @@ fn freebsd_motor() {
     );
     assert!(m.vivo(200) && !m.vivo(7) && !m.vivo(0) && !m.vivo(u32::MAX));
     assert_eq!(m.contar("claude"), 2);
-    assert!(m.em_dir("claude", Path::new("/home/u/proj")));
-    assert!(m.em_dir("claude", Path::new("/outro")));
-    assert!(!m.em_dir("claude", Path::new("/home/u")));
+    assert!(m.em_dir("claude", Path::new("/home/u/proj"), Modo::Exato));
+    assert!(m.em_dir("claude", Path::new("/outro"), Modo::Exato));
+    assert!(!m.em_dir("claude", Path::new("/home/u"), Modo::Exato));
     assert_eq!(m.memoria_disponivel_mb(), Some(1024));
     assert_eq!(m.carga1(), Some(0.75));
     let c = cmd.chamadas.lock().map(|c| c.clone()).unwrap_or_default();
@@ -338,8 +338,8 @@ fn macos_motor() {
             ("sysctl -n vm.loadavg", "{ 2.00 1 1 }"),
         ],
     );
-    assert!(m.em_dir("claude", Path::new("/Users/u/proj")));
-    assert!(!m.em_dir("claude", Path::new("/Users/u")));
+    assert!(m.em_dir("claude", Path::new("/Users/u/proj"), Modo::Exato));
+    assert!(!m.em_dir("claude", Path::new("/Users/u"), Modo::Exato));
     assert_eq!(m.memoria_disponivel_mb(), Some(1024));
     assert_eq!(m.carga1(), Some(2.0));
     assert!(!m.vivo(5), "ps sem resposta = não vivo, nunca 'assume vivo'");
@@ -354,7 +354,7 @@ fn comandos_ausentes_ou_lixo() {
     for so in [Sistema::FreeBsd, Sistema::MacOs, Sistema::Outro] {
         let (m, _) = motor(so, ProcFalso::default(), &[]);
         assert_eq!(m.contar("claude"), 0);
-        assert!(!m.em_dir("claude", Path::new("/")));
+        assert!(!m.em_dir("claude", Path::new("/"), Modo::Exato));
         assert!(!m.vivo(1));
         assert_eq!(m.memoria_disponivel_mb(), None);
         assert_eq!(m.carga1(), None);
@@ -371,7 +371,7 @@ fn lotes_de_pids() {
     let ps: String = (1..=600).map(|i| format!("{i} claude claude\n")).collect();
     let (m, cmd) = motor(Sistema::MacOs, ProcFalso::default(), &[("ps -axo", &ps), ("lsof", "")]);
     assert_eq!(m.contar("claude"), 600);
-    assert!(!m.em_dir("claude", Path::new("/x")));
+    assert!(!m.em_dir("claude", Path::new("/x"), Modo::Exato));
     let lsofs = cmd
         .chamadas
         .lock()
@@ -398,7 +398,7 @@ fn windows_motor() {
     assert!(m.vivo(4242) && !m.vivo(77) && !m.vivo(0));
     assert_eq!(m.contar("claude"), 2);
     assert_eq!(m.contar(".exe"), 0);
-    assert!(!m.em_dir("claude", Path::new("C:\\")));
+    assert!(!m.em_dir("claude", Path::new("C:\\"), Modo::Exato));
     assert_eq!((m.memoria_disponivel_mb(), m.carga1()), (None, None));
 }
 
@@ -438,9 +438,162 @@ fn smoke_sleep_real() {
     assert!(!real.vivo(0) && !real.vivo(u32::MAX));
     assert!(real.contar("sleep") >= 1);
     #[cfg(target_os = "linux")]
-    assert!(real.em_dir("sleep", &dir));
-    assert!(!real.em_dir("sleep", Path::new("/nao/existe/mesmo")));
+    assert!(real.em_dir("sleep", &dir, Modo::Exato));
+    assert!(!real.em_dir("sleep", Path::new("/nao/existe/mesmo"), Modo::Exato));
     assert!(filho.kill().is_ok());
     assert!(filho.wait().is_ok());
     assert!(!real.vivo(filho.id()), "pid colhido não pode seguir vivo");
+}
+
+/// **O quê:** `Prefixo` conta subdiretório, mas não irmão com prefixo comum só na string;
+/// `Exato` não conta subdiretório (Linux).
+///
+/// **Onde:** semântica de `agente_vivo_em` (Prefixo) vs `supervisor_vivo_em` (Exato).
+#[test]
+fn modo_prefixo_vs_exato_linux() {
+    let proc = proc_com(&[(10, b"claude\0", "/a/proj/sub/deep"), (11, b"claude\0", "/a/proj2")]);
+    let (m, _) = motor(Sistema::Linux, proc, &[]);
+    let proj = Path::new("/a/proj");
+    assert!(m.em_dir("claude", proj, Modo::Prefixo), "subdir conta");
+    assert!(!m.em_dir("claude", proj, Modo::Exato), "Exato não conta subdir");
+    assert!(m.em_dir("claude", Path::new("/a/proj2"), Modo::Exato));
+    assert!(m.em_dir("claude", Path::new("/a/proj2/"), Modo::Prefixo));
+    let so_irmao = proc_com(&[(11, b"claude\0", "/a/proj2")]);
+    let (m2, _) = motor(Sistema::Linux, so_irmao, &[]);
+    assert!(!m2.em_dir("claude", proj, Modo::Prefixo), "/a/proj2 não está em /a/proj");
+    assert!(!m2.em_dir("claude", Path::new("/a/pro"), Modo::Prefixo));
+}
+
+/// **O quê:** mesma regra de `Modo` nos caminhos por comando (FreeBSD/procstat, macOS/lsof).
+///
+/// **Onde:** `cwd_por_comando`.
+#[test]
+fn modo_por_comando() {
+    let ps = "200 claude claude\n";
+    let sub = " 200 claude cwd v d r------- - - - /a/proj/sub\n";
+    let irmao = " 200 claude cwd v d r------- - - - /a/proj2\n";
+    let proj = Path::new("/a/proj");
+    let (f, _) =
+        motor(Sistema::FreeBsd, ProcFalso::default(), &[("ps -axo", ps), ("procstat", sub)]);
+    assert!(f.em_dir("claude", proj, Modo::Prefixo) && !f.em_dir("claude", proj, Modo::Exato));
+    let (f, _) =
+        motor(Sistema::FreeBsd, ProcFalso::default(), &[("ps -axo", ps), ("procstat", irmao)]);
+    assert!(!f.em_dir("claude", proj, Modo::Prefixo));
+    let (m, _) = motor(
+        Sistema::MacOs,
+        ProcFalso::default(),
+        &[("ps -axo", ps), ("lsof", "p200\nfcwd\nn/a/proj/sub\n")],
+    );
+    assert!(m.em_dir("claude", proj, Modo::Prefixo) && !m.em_dir("claude", proj, Modo::Exato));
+}
+
+/// **O quê:** `pids_por_argv` exclui o próprio pid mesmo presente no `/proc` falso, exige TODOS os
+/// trechos (substring na linha unida) e trata argv hostil sem pânico.
+///
+/// **Onde:** semântica de `supervisor_vivo_em`.
+#[test]
+fn pids_por_argv_linux() {
+    let eu = std::process::id();
+    let mut proc = proc_com(&[
+        (10, b"schematize\0overdev\0supervise\0", "/p"),
+        (11, b"schematize\0overdev\0status\0", "/p"),
+        (12, b"supervise\0", "/p"),
+        (13, b"", "/p"),
+        (14, b"overdev\0\0\0supervise", "/p"),
+        (
+            15,
+            &[
+                0xff, b'o', b'v', b'e', b'r', b'd', b'e', b'v', 0, b's', b'u', b'p', b'e', b'r',
+                b'v', b'i', b's', b'e',
+            ],
+            "/p",
+        ),
+        (16, "ação\0überdev\0supervise\0".as_bytes(), "/p"),
+        (17, b"x\0overdevsupervise\0", "/p"),
+    ]);
+    proc.cmdlines.insert(eu, b"schematize\0overdev\0supervise\0".to_vec());
+    let (m, _) = motor(Sistema::Linux, proc, &[]);
+    let mut v = m.pids_por_argv(&["overdev", "supervise"]);
+    v.sort_unstable();
+    assert_eq!(v, vec![10, 14, 15, 17], "sem o próprio pid; substring como o original");
+    assert!(!m.pids_por_argv(&["supervise"]).contains(&eu));
+    assert_eq!(m.pids_por_argv(&["überdev", "ação"]), vec![16]);
+    assert!(m.pids_por_argv(&[]).is_empty());
+    assert!(m.pids_por_argv(&["overdev", ""]).is_empty(), "trecho vazio é fail-closed");
+    assert!(m.pids_por_argv(&["overdev", "nao-existe"]).is_empty());
+    let (vazio, _) = motor(Sistema::Linux, ProcFalso::default(), &[]);
+    assert!(vazio.pids_por_argv(&["overdev"]).is_empty());
+}
+
+/// **O quê:** `pids_por_argv` fora do Linux: usa `ps`, exclui o próprio pid; Windows devolve vazio.
+///
+/// **Onde:** ramos FreeBSD/macOS/Windows.
+#[test]
+fn pids_por_argv_ps_e_windows() {
+    let eu = std::process::id();
+    let ps = format!(
+        "10 schematize schematize overdev supervise\n11 schematize schematize overdev status\n{eu} schematize schematize overdev supervise\n\u{0}lixo\n"
+    );
+    for so in [Sistema::FreeBsd, Sistema::MacOs, Sistema::Outro] {
+        let (m, _) = motor(so, ProcFalso::default(), &[("ps -axo", &ps)]);
+        assert_eq!(m.pids_por_argv(&["overdev", "supervise"]), vec![10], "{so:?}");
+        assert!(m.pids_por_argv(&["nada"]).is_empty());
+    }
+    let (sem_ps, _) = motor(Sistema::MacOs, ProcFalso::default(), &[]);
+    assert!(sem_ps.pids_por_argv(&["overdev"]).is_empty());
+    let (w, _) = motor(Sistema::Windows, ProcFalso::default(), &[("tasklist", "x")]);
+    assert!(w.pids_por_argv(&["overdev"]).is_empty());
+}
+
+/// **O quê:** `pids_por_argv_em`: casa argv E cwd exato; cwd errado, subdir, cwd ausente e o
+/// próprio pid ficam de fora (Linux).
+///
+/// **Onde:** semântica completa de `supervisor_vivo_em`.
+#[test]
+fn pids_por_argv_em_linux() {
+    let eu = std::process::id();
+    let sup: &[u8] = b"schematize\0overdev\0supervise\0";
+    let mut proc = proc_com(&[
+        (10, sup, "/a/proj"),
+        (11, sup, "/a/outro"),
+        (12, sup, "/a/proj/sub"),
+        (13, sup, "/a/proj2"),
+        (14, b"schematize\0overdev\0status\0", "/a/proj"),
+        (15, sup, "/a/proj"),
+    ]);
+    proc.cwds.remove(&15);
+    proc.cmdlines.insert(eu, sup.to_vec());
+    proc.cwds.insert(eu, PathBuf::from("/a/proj"));
+    let (m, _) = motor(Sistema::Linux, proc, &[]);
+    let proj = Path::new("/a/proj");
+    assert_eq!(m.pids_por_argv_em(&["overdev", "supervise"], proj), vec![10]);
+    assert!(m.pids_por_argv_em(&["overdev", "supervise"], Path::new("/nada")).is_empty());
+    assert!(m.pids_por_argv_em(&[], proj).is_empty());
+}
+
+/// **O quê:** `pids_por_argv_em` fora do Linux (cwd por procstat/lsof, um pid por vez) e Windows.
+///
+/// **Onde:** ramos FreeBSD/macOS/Windows.
+#[test]
+fn pids_por_argv_em_ps_e_windows() {
+    let ps = "10 s s overdev supervise\n11 s s overdev supervise\n";
+    let proj = Path::new("/a/proj");
+    let (f, _) = motor(
+        Sistema::FreeBsd,
+        ProcFalso::default(),
+        &[
+            ("ps -axo", ps),
+            ("procstat -f 10", " 10 s cwd v d r------- - - - /a/proj\n"),
+            ("procstat -f 11", " 11 s cwd v d r------- - - - /a/outro\n"),
+        ],
+    );
+    assert_eq!(f.pids_por_argv_em(&["overdev", "supervise"], proj), vec![10]);
+    let (m, _) = motor(
+        Sistema::MacOs,
+        ProcFalso::default(),
+        &[("ps -axo", ps), ("lsof -a -d cwd -Fn -p 11", "p11\nfcwd\nn/a/proj\n")],
+    );
+    assert_eq!(m.pids_por_argv_em(&["overdev", "supervise"], proj), vec![11]);
+    let (w, _) = motor(Sistema::Windows, ProcFalso::default(), &[]);
+    assert!(w.pids_por_argv_em(&["overdev"], proj).is_empty());
 }
