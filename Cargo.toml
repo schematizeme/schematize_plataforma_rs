@@ -1,0 +1,22 @@
+[package]
+name = "schematize_plataforma"
+version = "0.1.0"
+edition = "2021"
+description = "Infra de plataforma compartilhada do ecossistema schematize (std-only, sem dependências): market parasita, procedência de build, resolução de binário/HOME e escrita atômica."
+license = "MIT"
+repository = "https://github.com/schematizeme/schematize_plataforma_rs"
+readme = "README.md"
+keywords = ["schematize", "platform"]
+categories = ["os"]
+
+# ZERO dependências externas, por contrato: as janelas Slint (deployer_gui/optimizer_gui)
+# dependem só de `slint` e esta lib não pode mudar isso. Cada módulo mora atrás de feature
+# para o app compilar só o que pede.
+[dependencies]
+
+[features]
+default = ["parasita", "base"]
+# O bootstrap do `schematize-market` (+gui) em `~/.cargo/bin`.
+parasita = []
+# `procedencia`, `bin` (HOME / resolve_bin) e `arquivo` (escrita atômica).
+base = []

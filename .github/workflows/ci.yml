@@ -1,0 +1,40 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verificar:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+
+      - name: toolchain
+        run: rustup toolchain install stable --profile minimal -c clippy,rustfmt -t x86_64-unknown-freebsd -t x86_64-pc-windows-gnu
+
+      - name: fmt
+        run: cargo fmt --check
+
+      - name: clippy (todas as combinações de features)
+        run: |
+          cargo clippy --all-targets -- -D warnings
+          cargo clippy --all-targets --no-default-features -- -D warnings
+          cargo clippy --all-targets --no-default-features --features parasita -- -D warnings
+          cargo clippy --all-targets --no-default-features --features base -- -D warnings
+
+      - name: test
+        run: |
+          cargo test
+          cargo test --no-default-features --features parasita
+          cargo test --no-default-features --features base
+
+      - name: check cross
+        run: |
+          cargo check --target x86_64-unknown-freebsd
+          cargo check --target x86_64-pc-windows-gnu
