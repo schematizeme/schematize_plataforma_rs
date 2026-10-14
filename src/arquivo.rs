@@ -21,7 +21,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 /// falhava com "No such file or directory" — em ~15% das rodadas. O contador resolve entre
 /// threads; o PID, entre processos. Se algo falha, o temporário é removido.
 pub fn escreve_atomico(alvo: &Path, conteudo: &str) -> Result<(), String> {
-    let dir = alvo.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or(Path::new("."));
+    let dir = dir_do_alvo(alvo);
     std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     static SEQ: AtomicU64 = AtomicU64::new(0);
     let n = SEQ.fetch_add(1, Ordering::Relaxed);
@@ -40,6 +40,13 @@ pub fn escreve_atomico(alvo: &Path, conteudo: &str) -> Result<(), String> {
         };
     }
     Ok(())
+}
+
+/// **O quê:** o diretório onde o temporário nasce: o pai de `alvo`, ou `.` se `alvo` é só um nome.
+///
+/// **Onde:** [`escreve_atomico`].
+fn dir_do_alvo(alvo: &Path) -> &Path {
+    alvo.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or(Path::new("."))
 }
 
 /// **O quê:** cria `tmp`, escreve e faz `sync_all`.
@@ -134,16 +141,21 @@ mod tests {
         assert!(escreve_atomico(&base.join("arq/filho.json"), "x").is_err());
     }
 
-    /// Alvo sem diretório pai explícito (relativo, só o nome) usa o cwd sem pânico.
+    /// Alvo só com o nome (sem pai) resolve ao cwd "." — decidido por função pura, sem
+    /// escrever nada fora do `target`.
     #[test]
-    fn alvo_relativo_sem_pai_nao_entra_em_panico() {
-        let base = tmp("rel");
-        std::fs::create_dir_all(&base).unwrap();
-        // Não mudamos o cwd (global): validamos só que o ramo `parent() == ""` resolve a ".".
-        let alvo = Path::new("so-o-nome-plataforma-teste.tmpx");
-        let r = escreve_atomico(alvo, "x");
-        let limpeza = std::fs::remove_file(alvo);
-        r.unwrap();
-        limpeza.unwrap();
+    fn alvo_sem_pai_resolve_ao_diretorio_corrente() {
+        assert_eq!(dir_do_alvo(Path::new("so-o-nome.json")), Path::new("."));
+        assert_eq!(dir_do_alvo(Path::new("a/b.json")), Path::new("a"));
+        assert_eq!(dir_do_alvo(Path::new("/b.json")), Path::new("/"));
+    }
+
+    /// Alvo com base explícita e nome unicode/espaços grava dentro dela.
+    #[test]
+    fn alvo_com_base_explicita_grava_dentro_dela() {
+        let base = tmp("base");
+        let alvo = base.join("só o nome.json");
+        escreve_atomico(&alvo, "x").unwrap();
+        assert_eq!(std::fs::read_to_string(&alvo).unwrap(), "x");
     }
 }
