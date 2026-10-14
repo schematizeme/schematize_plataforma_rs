@@ -35,6 +35,17 @@ pub trait Substituicao: Send + Sync {
     ///
     /// **Onde:** depois de trocar o executável da GUI.
     fn encerrar_gui(&self, nome: &str);
+    /// **O quê:** remove o arquivo `alvo`; ausente é `Ok`. Default (v0.2.2): `remove_file`.
+    /// O Windows sobrescreve (arquivo em uso: aposenta como `.old`).
+    ///
+    /// **Onde:** limpeza de cópias antigas de binário.
+    fn remover(&self, alvo: &Path) -> Result<(), String> {
+        match std::fs::remove_file(alvo) {
+            Ok(()) => Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(format!("não consegui remover {}: {e}", alvo.display())),
+        }
+    }
 }
 
 /// **O quê:** impl Unix do [`Substituicao`] (rename atômico sobre o destino, `pkill -x`).
@@ -506,5 +517,25 @@ mod testes {
         for n in ["schematize", "schematize-market_gui", "A1", "x-"] {
             assert!(validar_nome_gui(n).is_ok(), "{n}");
         }
+    }
+}
+
+#[cfg(all(test, unix))]
+mod testes_remover {
+    use super::*;
+
+    /// **O quê:** `remover` apaga o arquivo, ausente é `Ok`, diretório é `Err`. **Onde:** teste.
+    #[test]
+    fn remover_padrao() {
+        let d = std::env::temp_dir().join(format!("seams_subst_rm_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        let f = d.join("x");
+        std::fs::write(&f, "1").unwrap();
+        let s = SubstituicaoUnix;
+        assert!(s.remover(&f).is_ok() && !f.exists());
+        assert!(s.remover(&f).is_ok(), "ausente é Ok");
+        assert!(s.remover(&d).is_err(), "diretório não é arquivo");
+        let _ = std::fs::remove_dir_all(&d);
     }
 }

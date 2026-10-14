@@ -70,12 +70,12 @@ pub trait Processos: Send + Sync {
     fn em_dir(&self, nome: &str, dir: &Path, modo: Modo) -> bool;
     /// **O quê:** pids (exceto `std::process::id()`) cuja linha de comando completa (argv unido
     /// por espaço) contém CADA `trecho` como substring. `trechos` vazio ou com trecho vazio
-    /// devolve vazio (fail-closed). Windows: sempre vazio (sem argv confiável).
+    /// devolve vazio (fail-closed). O que a plataforma não consegue ler com confiança fica de fora (pode ser vazio).
     ///
     /// **Onde:** supervisor do overdev (`supervisor_vivo_em`: `overdev` + `supervise`).
     fn pids_por_argv(&self, trechos: &[&str]) -> Vec<u32>;
     /// **O quê:** como [`Processos::pids_por_argv`], mas só os pids cujo cwd == `dir`
-    /// ([`Modo::Exato`]); cwd ilegível = não casa. Windows: sempre vazio.
+    /// ([`Modo::Exato`]); cwd ilegível = não casa. Como em `pids_por_argv`, é a implementação da plataforma que decide o que consegue ler.
     ///
     /// **Onde:** supervisor do overdev (`supervisor_vivo_em`: argv E cwd do projeto).
     fn pids_por_argv_em(&self, trechos: &[&str], dir: &Path) -> Vec<u32>;

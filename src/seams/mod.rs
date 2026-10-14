@@ -9,6 +9,7 @@
 pub mod abridor;
 pub mod atalhos;
 pub mod atalhos_render;
+pub mod caminhos;
 pub mod pathsetup;
 pub mod processos;
 pub mod rede;
@@ -19,6 +20,7 @@ pub mod terminal;
 pub use abridor::Abridor;
 pub use atalhos::Atalhos;
 pub use atalhos_render::EntradaAtalho;
+pub use caminhos::{Caminhos, CaminhosUnix};
 pub use pathsetup::PathSetup;
 pub use processos::Processos;
 pub use rede::Rede;
@@ -27,6 +29,10 @@ pub use substituicao::Substituicao;
 pub use terminal::{ScriptTerminal, Terminal};
 
 /// Todas as costuras, injetadas no host.
+///
+/// `#[non_exhaustive]`: costuras novas entram sem quebrar quem a monta — use [`Plataforma::nova`]
+/// (e os `com_*` para trocar as costuras com default).
+#[non_exhaustive]
 pub struct Plataforma {
     /// Execução de comandos de shell.
     pub shell: Box<dyn Shell>,
@@ -44,6 +50,44 @@ pub struct Plataforma {
     pub abridor: Box<dyn Abridor>,
     /// Consulta de processos e recursos.
     pub processos: Box<dyn Processos>,
+    /// Separador de `PATH` e listas de diretórios (default: Unix).
+    pub caminhos: Box<dyn Caminhos>,
+}
+
+impl Plataforma {
+    /// **O quê:** monta a plataforma com as 8 costuras base; as novas (hoje `caminhos`)
+    /// entram com o default Unix e se trocam com `com_*`. Existe porque a struct é
+    /// `non_exhaustive` (literal não compila fora da lib).
+    /// **Onde:** o `main` de cada SO (o Windows, em `schematize_windows_rs`).
+    #[allow(clippy::too_many_arguments)]
+    pub fn nova(
+        shell: Box<dyn Shell>,
+        rede: Box<dyn Rede>,
+        substituicao: Box<dyn Substituicao>,
+        atalhos: Box<dyn Atalhos>,
+        path: Box<dyn PathSetup>,
+        terminal: Box<dyn Terminal>,
+        abridor: Box<dyn Abridor>,
+        processos: Box<dyn Processos>,
+    ) -> Self {
+        Plataforma {
+            shell,
+            rede,
+            substituicao,
+            atalhos,
+            path,
+            terminal,
+            abridor,
+            processos,
+            caminhos: Box::new(CaminhosUnix),
+        }
+    }
+
+    /// **O quê:** troca a costura de caminhos. **Onde:** o `main` do Windows.
+    pub fn com_caminhos(mut self, c: Box<dyn Caminhos>) -> Self {
+        self.caminhos = c;
+        self
+    }
 }
 
 #[cfg(unix)]
@@ -61,6 +105,7 @@ impl Plataforma {
             terminal: Box::new(terminal::TerminalUnix),
             abridor: Box::new(abridor::AbridorUnix),
             processos: Box::new(processos::ProcessosUnix),
+            caminhos: Box::new(CaminhosUnix),
         }
     }
 }
@@ -79,5 +124,6 @@ mod testes {
         assert!(!p.shell.existe("binario-inexistente-42"));
         assert!(p.processos.vivo(std::process::id()));
         assert!(p.abridor.abrir("").is_err());
+        assert_eq!(p.caminhos.separador_path(), ':');
     }
 }
