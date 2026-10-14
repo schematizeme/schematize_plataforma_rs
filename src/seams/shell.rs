@@ -9,7 +9,7 @@
 
 use std::io;
 use std::path::Path;
-use std::process::Output;
+use std::process::{ExitStatus, Output, Stdio};
 
 /// **O quê:** a costura de shell — executa um comando e diz se um binário existe.
 /// **Onde:** chamadores recebem `&dyn Shell`; os testes injetam um falso.
@@ -21,6 +21,32 @@ pub trait Shell: Send + Sync {
     /// **O quê:** `true` se `bin` resolve no `PATH` como executável.
     /// **Onde:** sondas "a ferramenta X está instalada?".
     fn existe(&self, bin: &str) -> bool;
+
+    /// **O quê:** executa `argv` DIRETO (sem shell de login, sem parsing de shell). Com
+    /// `herdar_stdio` o filho herda stdin/stdout/stderr (prompt do `sudo`, progresso ao vivo);
+    /// sem ele, saída capturada e descartada e stdin nulo. `argv` vazio é `InvalidInput`.
+    /// **Onde:** receitas que precisam de um comando exato com o terminal da pessoa.
+    /// Método com default (v0.2.1, não quebra implementadores): usa `std::process::Command`.
+    fn executar(&self, argv: &[&str], herdar_stdio: bool) -> io::Result<ExitStatus> {
+        let (prog, args) = argv
+            .split_first()
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "argv vazio"))?;
+        let mut c = std::process::Command::new(prog);
+        c.args(args);
+        if herdar_stdio {
+            c.stdin(Stdio::inherit()).stdout(Stdio::inherit()).stderr(Stdio::inherit());
+        } else {
+            c.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+        }
+        c.status()
+    }
+
+    /// **O quê:** roda `cmd` no shell de login HERDANDO o terminal (saída ao vivo, `sudo`
+    /// consegue pedir a senha). **Onde:** execução de passos de instalação já consentidos.
+    /// Default (v0.2.1): `sh -c` herdado; o Unix sobrescreve com `<login_shell> -lc`.
+    fn run_herdado(&self, cmd: &str) -> io::Result<ExitStatus> {
+        self.executar(&["sh", "-c", cmd], true)
+    }
 }
 
 /// **O quê:** escolhe o shell a partir de fatos já medidos. PURA. `sh` só no FreeBSD sem bash
@@ -96,6 +122,12 @@ impl Shell for ShellUnix {
     /// **Onde:** sondas de ferramenta instalada.
     fn existe(&self, bin: &str) -> bool {
         existe_no_path(bin)
+    }
+
+    /// **O quê:** `<login_shell> -lc <cmd>` com stdin/stdout/stderr herdados.
+    /// **Onde:** `exec_step` das receitas do market.
+    fn run_herdado(&self, cmd: &str) -> io::Result<ExitStatus> {
+        self.executar(&[login_shell(), "-lc", cmd], true)
     }
 }
 
@@ -201,6 +233,20 @@ mod testes {
         assert!(ShellUnix.run("").expect("run").status.success());
         let nf = ShellUnix.run("schematize_cmd_inexistente_zzz").expect("run");
         assert_eq!(nf.status.code(), Some(127));
+    }
+
+    /// **O quê:** `executar` roda direto (sem parsing de shell) e `run_herdado` devolve o
+    /// status do comando. **Onde:** teste.
+    #[test]
+    fn executar_e_run_herdado() {
+        assert!(ShellUnix.executar(&["true"], false).expect("true").success());
+        assert_eq!(ShellUnix.executar(&["sh", "-c", "exit 3"], false).unwrap().code(), Some(3));
+        // Sem parsing de shell: o `;` é argumento literal, não separador.
+        assert!(ShellUnix.executar(&["echo", "a;false"], false).unwrap().success());
+        assert!(ShellUnix.executar(&[], false).is_err());
+        assert!(ShellUnix.executar(&["schematize_inexistente_zzz"], true).is_err());
+        assert!(ShellUnix.run_herdado("exit 0").unwrap().success());
+        assert_eq!(ShellUnix.run_herdado("exit 5").unwrap().code(), Some(5));
     }
 
     /// **O quê:** `login_shell` real é um dos dois valores válidos. **Onde:** teste.

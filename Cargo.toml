@@ -1,6 +1,6 @@
 [package]
 name = "schematize_plataforma"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2021"
 description = "Infra de plataforma compartilhada do ecossistema schematize (std-only, sem dependências): market parasita, procedência de build, resolução de binário/HOME e escrita atômica."
 license = "MIT"

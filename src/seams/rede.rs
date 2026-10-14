@@ -24,6 +24,15 @@ pub trait Rede: Send + Sync {
     /// **O quê:** baixa `url` para `destino` (via arquivo temporário + rename).
     /// **Onde:** download de binário pré-compilado.
     fn baixar(&self, url: &str, destino: &Path) -> Result<(), String>;
+
+    /// **O quê:** como [`Rede::baixar`], mas com `mostrar` e stderr num terminal o cliente
+    /// desenha a barra de progresso nele (a falha continua devolvendo a causa). Sem terminal
+    /// ou com `mostrar == false`, é o `baixar` comum. Default (v0.2.1): ignora `mostrar`.
+    /// **Onde:** download de binários grandes (apps, self-update).
+    fn baixar_com_progresso(&self, url: &str, destino: &Path, mostrar: bool) -> Result<(), String> {
+        let _ = mostrar;
+        self.baixar(url, destino)
+    }
 }
 
 /// Cliente HTTP de linha de comando. `Fetch` é o `fetch(1)` do FreeBSD base.
@@ -137,6 +146,68 @@ pub fn baixar_com(cli: Cliente, url: &str, destino: &Path, exec: Executor) -> Re
     }
 }
 
+/// Executor com stderr HERDADO (a barra de progresso aparece no terminal): `(programa, argv)`.
+/// O stdout vai para o nulo; o erro é só o status (a causa já saiu no terminal).
+pub type ExecutorHerdado<'a> = &'a dyn Fn(&str, &[String]) -> Result<(), String>;
+
+/// **O quê:** executor herdado real: stdin/stdout nulos, stderr herdado. **Onde:** [`RedeUnix`].
+pub fn executar_herdado_real(prog: &str, argv: &[String]) -> Result<(), String> {
+    let st = Command::new(prog)
+        .args(argv)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .status()
+        .map_err(|e| format!("não consegui executar `{prog}`: {e}"))?;
+    if st.success() {
+        Ok(())
+    } else {
+        Err(format!("`{prog}` falhou ({st})"))
+    }
+}
+
+/// **O quê:** argv do download COM barra de progresso: o curl sem `-s` (a barra sai no stderr
+/// quando ele é um terminal); o `fetch` já mostra progresso sozinho. PURA.
+/// **Onde:** [`baixar_progresso_com`] e os testes.
+pub fn baixar_progresso_args(cli: Cliente, url: &str, dest: &str) -> (&'static str, Vec<String>) {
+    baixar_args(cli, url, dest)
+}
+
+/// **O quê:** download com progresso: `.part` + rename, como [`baixar_com`]. Se `mostrar` e
+/// `tty`, roda `exec_herdado` (a barra aparece); senão cai em [`baixar_com`] (`exec`).
+/// Em falha remove o parcial e devolve a causa. **Onde:** [`RedeUnix`] e os testes.
+pub fn baixar_progresso_com(
+    cli: Cliente,
+    url: &str,
+    destino: &Path,
+    mostrar_na_tela: bool,
+    exec: Executor,
+    exec_herdado: ExecutorHerdado,
+) -> Result<(), String> {
+    if !mostrar_na_tela {
+        return baixar_com(cli, url, destino, exec);
+    }
+    let parcial = caminho_parcial(destino);
+    let parcial_s =
+        parcial.to_str().ok_or_else(|| format!("caminho não-UTF-8: {}", parcial.display()))?;
+    let (prog, argv) = baixar_progresso_args(cli, url, parcial_s);
+    let res = exec_herdado(prog, &argv).and_then(|()| {
+        if parcial.is_file() {
+            std::fs::rename(&parcial, destino)
+                .map_err(|e| format!("não consegui gravar {}: {e}", destino.display()))
+        } else {
+            Err(format!("o download de {url} não gerou arquivo"))
+        }
+    });
+    match res {
+        Ok(()) => Ok(()),
+        Err(e) if parcial.exists() => match std::fs::remove_file(&parcial) {
+            Ok(()) => Err(e),
+            Err(r) => Err(format!("{e} (e não consegui remover {}: {r})", parcial.display())),
+        },
+        Err(e) => Err(e),
+    }
+}
+
 /// **O quê:** implementação real do [`Rede`]: `curl` (ou `fetch` no FreeBSD sem curl).
 /// **Onde:** composição dos apps Linux/macOS/FreeBSD.
 pub struct RedeUnix;
@@ -150,6 +221,21 @@ impl Rede for RedeUnix {
     /// **O quê:** download atômico (temp + rename). **Onde:** quem usa `&dyn Rede`.
     fn baixar(&self, url: &str, destino: &Path) -> Result<(), String> {
         baixar_com(cliente(), url, destino, &executar_real)
+    }
+
+    /// **O quê:** download com a barra de progresso do cliente quando `mostrar` e o stderr é um
+    /// terminal. **Onde:** quem usa `&dyn Rede` para baixar binários.
+    fn baixar_com_progresso(&self, url: &str, destino: &Path, mostrar: bool) -> Result<(), String> {
+        use std::io::IsTerminal;
+        let tty = std::io::stderr().is_terminal();
+        baixar_progresso_com(
+            cliente(),
+            url,
+            destino,
+            mostrar && tty,
+            &executar_real,
+            &executar_herdado_real,
+        )
     }
 }
 
@@ -166,6 +252,38 @@ mod testes {
         }
         std::fs::create_dir_all(&d).expect("mkdir");
         d
+    }
+
+    /// **O quê:** download com progresso usando um "curl" falso (script) que grava o arquivo:
+    /// sucesso renomeia o `.part`; falha remove o parcial e devolve a causa; sem `mostrar`
+    /// cai no executor capturado. **Onde:** teste (sem rede).
+    #[test]
+    fn baixar_com_progresso_usa_curl_falso() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = tmp("prog");
+        let fake = d.join("curl-falso");
+        std::fs::write(&fake, "#!/bin/sh\nwhile [ $# -gt 0 ]; do [ \"$1\" = -o ] && o=\"$2\"; shift; done\n[ \"$FALHA\" = 1 ] && exit 22\necho dados > \"$o\"\n").unwrap();
+        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let f = fake.to_str().unwrap().to_string();
+        let herdado = |_: &str, a: &[String]| executar_herdado_real(&f, a);
+        let capt = |_: &str, a: &[String]| executar_real(&f, a).map(|_| String::new());
+        let dest = d.join("bin");
+        baixar_progresso_com(Cliente::Curl, "https://x/y", &dest, true, &capt, &herdado).unwrap();
+        assert_eq!(std::fs::read_to_string(&dest).unwrap(), "dados\n");
+        assert!(!caminho_parcial(&dest).exists());
+        let dest2 = d.join("bin2");
+        let falha = |_: &str, a: &[String]| -> Result<(), String> {
+            let _ = std::fs::write(a.iter().skip_while(|x| *x != "-o").nth(1).unwrap(), "x");
+            Err("`curl` falhou (exit 22)".into())
+        };
+        let e = baixar_progresso_com(Cliente::Curl, "https://x/y", &dest2, true, &capt, &falha)
+            .unwrap_err();
+        assert!(e.contains("22"), "{e}");
+        assert!(!dest2.exists() && !caminho_parcial(&dest2).exists());
+        let dest3 = d.join("bin3");
+        let nunca = |_: &str, _: &[String]| -> Result<(), String> { panic!("sem tty não herda") };
+        baixar_progresso_com(Cliente::Curl, "https://x/y", &dest3, false, &capt, &nunca).unwrap();
+        assert!(dest3.is_file());
     }
 
     /// **O quê:** a tabela de escolha do cliente. **Onde:** `cargo test`.
