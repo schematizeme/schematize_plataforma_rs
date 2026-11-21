@@ -14,6 +14,9 @@
 //! | `base` | [`procedencia`], [`bin`], [`arquivo`] | sim |
 //! | `seams` | `seams` — traits de plataforma + impl Unix | não |
 //! | `jaula` | `jaula` — teto duro de memória por execução (OOM confinado) | não |
+//! | `sistema` | `sistema` — detecção só-leitura do ambiente de memória/OOM do host | não |
+//! | `memoria` | `memoria` (implica `sistema`) — PSI, `memory.events`, governador de admissão | não |
+//! | `persistencia` | `persistencia` — journal WAL, snapshot atômico, vigia e o bin `schematize-vigia` | não |
 //!
 //! O módulo [`home`] (resolução de `HOME`) compila com qualquer uma delas.
 

@@ -13,6 +13,9 @@ sem domínio (piso 6). Licença MIT.
 
 | `seams` | `seams` — traits `Shell, Rede, Substituicao, Atalhos, PathSetup, Terminal, Abridor, Processos` + `Plataforma::unix()` (linux/freebsd/macos) | não |
 | `jaula` | `jaula` — teto duro de memória por execução; o OOM mata só a execução | não |
+| `sistema` | `sistema` — detecta o ambiente de memória/OOM do host (cgroup v2, PSI, oomd, zram, systemd). **Só lê** | não |
+| `memoria` | `memoria` (implica `sistema`) — monitor de cgroup/PSI, governador de admissão, histórico de picos | não |
+| `persistencia` | `persistencia` + bin `schematize-vigia` — journal WAL, snapshot atômico, máquina idempotente, vigia | não |
 
 `home` (resolução de `HOME`) compila com qualquer uma delas. Quem só quer o parasita:
 `default-features = false, features = ["parasita"]`.
@@ -113,3 +116,53 @@ Nota: o scope do systemd não aceita `OOMScoreAdjust=`; o score entra por um wra
 cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test
 cargo check --target x86_64-unknown-freebsd && cargo check --target x86_64-pc-windows-gnu
 ```
+
+## `sistema` (feature `sistema`)
+
+Detector **somente-leitura** do que o host faz com memória: versão do kernel, cgroup v2, `memory.*`, PSI, daemons de
+OOM (systemd-oomd, earlyoom...), zram/swap, e uma lista de **achados** (problemas) com `margem_segura`.
+Garantias: só lê `/proc` e `/sys` (e a saída de comandos de consulta); **nada é instalado, alterado ou escrito**;
+ausência de qualquer fonte vira "desconhecido", nunca erro nem pânico. Limites: Linux (cgroup v2); em outros SO devolve vazio.
+
+## `memoria` (feature `memoria`)
+
+Controle fino em runtime sobre o `sistema`: leitura de PSI e `memory.events`, monitor de cgroup, **governador** que decide
+admissão de trabalho por orçamento adaptativo, e histórico de picos (anel em memória). Garantias: decisões puras e
+testadas com fixtures; só lê. Limites: não impõe teto (para isso a `jaula`); depende de cgroup v2 para os sinais finos.
+
+## `persistencia` (feature `persistencia`) e `schematize-vigia`
+
+Para o orquestrador retomar exatamente de onde parou depois de SIGKILL/OOM/queda de energia:
+
+- `Journal`: WAL append-only `[len][crc32][seq][tipo][payload]`, segmentos rotacionados, fsync configurável
+  (`Durabilidade::Cada` é o default e garante "Ok == sobrevive à queda"), escritor único por `flock`, recuperação que
+  trunca a cauda torn e **recusa** buraco de seq/corrupção no meio.
+- `Snapshot`: atômico (tmp + fsync + rename + fsync do diretório), versionado, com `.prev`.
+- `Maquina`/`Estado`: `estado = snapshot + replay`, eventos idempotentes por seq.
+- `rodar(&VigiaCfg)` e `unit_systemd(&VigiaCfg)`: o vigia e a unit de usuário do systemd (texto; **nada é instalado**).
+
+### Binário `schematize-vigia`
+
+```text
+schematize-vigia --estado <dir> [--max-mortes N] [--janela-s S] [--backoff-ms B] -- <cmd> [args...]
+schematize-vigia --estado <dir> --unit-systemd -- <cmd> [args...]   # imprime a unit, nada é instalado
+schematize-vigia --estado <dir> --status                            # mortes, parked, última causa
+schematize-vigia --estado <dir> --limpar-parked --sim               # reabre o circuito (exige --sim)
+schematize-vigia --help | --version
+```
+
+Compilar: `cargo build --release --features persistencia` (o bin exige só essa feature; sem deps). Relança `<cmd>` com
+`--resume` quando morre (backoff exponencial + jitter) e abre o circuito (`parked`) após N mortes na janela (default 5 em
+600 s). Mensagens em pt/en (`SCHEMATIZE_LANG`, `LC_ALL` ou `LANG`).
+
+| exit | significado |
+|---|---|
+| 0 | concluiu (filho saiu 0) ou ação auxiliar ok |
+| 1 | erro de execução/E-S |
+| 2 | uso incorreto |
+| 3 | parked (agora ou de antes; também no `--status`) |
+
+Garantias: RSS ocioso ~2,7 MiB (medido, ver `BUDGET.md`); journal próprio fsync a cada registro; um só vigia por estado.
+Limites conhecidos: só Unix (flock, `/proc`); `oom_score_adj` negativo exige `CAP_SYS_RESOURCE` (sem ele é ignorado e
+registrado como `oom_adj_aplicado=false`); o torn-write natural (queda de energia no meio de um registro) nunca foi
+observado, só simulado por truncagem; falha de `fsync` **envenena** o journal (`Erro::Envenenado`: reabra e recupere).

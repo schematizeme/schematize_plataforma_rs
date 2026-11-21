@@ -1,6 +1,6 @@
 [package]
 name = "schematize_plataforma"
-version = "0.3.0"
+version = "0.4.0"
 edition = "2021"
 description = "Infra de plataforma compartilhada do ecossistema schematize (std-only, sem dependências): market parasita, procedência de build, resolução de binário/HOME e escrita atômica."
 license = "MIT"
@@ -13,6 +13,12 @@ categories = ["os"]
 # dependem só de `slint` e esta lib não pode mudar isso. Cada módulo mora atrás de feature
 # para o app compilar só o que pede.
 [dependencies]
+
+# Vigia (watchdog) como binário: só std, só a feature `persistencia`.
+[[bin]]
+name = "schematize-vigia"
+path = "src/vigia_main.rs"
+required-features = ["persistencia"]
 
 [features]
 default = ["parasita", "base"]
