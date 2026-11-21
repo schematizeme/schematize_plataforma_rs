@@ -12,6 +12,7 @@ sem domínio (piso 6). Licença MIT.
 | `base` | `procedencia`, `bin`, `arquivo` | sim |
 
 | `seams` | `seams` — traits `Shell, Rede, Substituicao, Atalhos, PathSetup, Terminal, Abridor, Processos` + `Plataforma::unix()` (linux/freebsd/macos) | não |
+| `jaula` | `jaula` — teto duro de memória por execução; o OOM mata só a execução | não |
 
 `home` (resolução de `HOME`) compila com qualquer uma delas. Quem só quer o parasita:
 `default-features = false, features = ["parasita"]`.
@@ -85,6 +86,26 @@ bit de execução em unix; nome com `/`, `\` ou vazio -> `None`), `binary_in_pat
 
 `escreve_atomico(alvo, conteudo) -> Result<(), String>`: temporário único (pid + contador), `sync_all`, `rename`;
 remove o temporário se algo falha.
+
+## `jaula` (feature `jaula`, v0.3.0)
+
+Teto duro de memória **por execução**: o OOM mata só a jaula, nunca o orquestrador. Backend
+`systemd-run --user --scope` (cgroup v2, `memory` delegado; `OOMPolicy=kill`, `MemorySwapMax=0`,
+`OOMScoreAdjust` maior que o do pai); fallback `prlimit`; sem nenhum, `Veredito::SemBackend` (não roda).
+
+```rust
+use schematize_plataforma::jaula::{estimar, executar, TipoExecucao, Veredito};
+let argv = vec!["cargo".to_string(), "test".to_string()];
+match executar(&estimar(TipoExecucao::Teste), &argv, "teste-1") {
+    Veredito::EstourouMemoria { pico_mib, teto_mib } => eprintln!("OOM: {pico_mib:?}/{teto_mib}"),
+    outro => eprintln!("{outro:?}"),
+}
+```
+
+Nota: o scope do systemd não aceita `OOMScoreAdjust=`; o score entra por um wrapper `sh` com argv puro. Sem swap, memória anônima presa no `MemoryHigh` por >3 s mata a unidade (o kernel só faria throttle).
+
+`Orcamento::novo` clampa em [500, 2048] MiB (acima só com `override_adr`); `estimar` mapeia
+`AgenteLlm/Teste→1024`, `Script/Tool→512`, `Build/Navegador→2048`; `jobs_sugeridos` ≈ teto/700 MiB.
 
 ## Desenvolvimento
 
