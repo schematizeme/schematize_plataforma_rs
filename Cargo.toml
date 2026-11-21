@@ -24,3 +24,9 @@ base = []
 seams = []
 # Jaula de memória por execução (OOM confinado ao cgroup da execução). Sem deps; fora do default.
 jaula = []
+# Detecção do ambiente de memória/OOM do host (systemd, oomd, zram, PSI, cgroup). Só leitura. Sem deps.
+sistema = []
+# Controle fino de memória/recursos em runtime (PSI, memory.events, orçamento adaptativo). Sem deps.
+memoria = ["sistema"]
+# Persistência durável externa ao processo (journal WAL + snapshot atômico + vigia). Sem deps.
+persistencia = []

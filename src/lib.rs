@@ -25,9 +25,15 @@ pub mod bin;
 pub mod home;
 #[cfg(feature = "jaula")]
 pub mod jaula;
+#[cfg(feature = "memoria")]
+pub mod memoria;
 #[cfg(feature = "parasita")]
 pub mod parasita;
+#[cfg(feature = "persistencia")]
+pub mod persistencia;
 #[cfg(feature = "base")]
 pub mod procedencia;
 #[cfg(feature = "seams")]
 pub mod seams;
+#[cfg(feature = "sistema")]
+pub mod sistema;
